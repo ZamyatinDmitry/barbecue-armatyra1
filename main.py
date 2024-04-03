@@ -1,125 +1,72 @@
 import pandas as pd
+from statsmodels.tsa.statespace.sarimax import SARIMAX
 import matplotlib.pyplot as plt
-from statsmodels.graphics.tsaplots import plot_acf, plot_pacf
-from datetime import datetime
-import pmdarima as pm
 
-# Функция для преобразования строки в число с учетом десятичной запятой
-def parse_quantity(quantity_str):
-    # Удаляем пробелы из строки
-    quantity_str = quantity_str.replace(" ", "")
-    # Заменяем запятую на точку для корректного преобразования в число
-    quantity_str = quantity_str.replace(",", ".")
-    return float(quantity_str)
+file_path = 'C:/BARBECUE/Выгрузка.xlsx'
+data = pd.read_excel(file_path, parse_dates=['Дата поступления'])
 
-# Загрузка данных из файла Excel
-file_path = 'C:\Выгрузка.xlsx'
-data = pd.read_excel(file_path, skiprows=3)
-
-# Удаляем столбцы с пустыми названиями
-data.drop(columns=['Unnamed: 1', 'Unnamed: 2', 'Unnamed: 3'], inplace=True)
-
-# Удаление столбца "Документ"
-data.drop(columns=['Документ'], inplace=True)
-
-# Получаем список всех уникальных номенклатур
 all_armatures = data['Номенклатура'].unique()
 
-# Отбираем по одной номенклатуре каждого типа
-unique_armatures = set()
-for armature in all_armatures:
-    armature_type = armature.split()[0]  # Берем первое слово в названии как тип номенклатуры
-    unique_armatures.add(armature_type)
-
-# Отображаем список уникальных типов номенклатур пользователю
 print("Список уникальных типов номенклатур:")
-for i, armature_type in enumerate(unique_armatures, start=1):
+unique_armature_types = set([armature.split()[0] for armature in all_armatures])
+for i, armature_type in enumerate(unique_armature_types, start=1):
     print(f"{i}. {armature_type}")
 
-# Просим пользователя выбрать тип номенклатуры
 armature_type_choice = int(input("Выберите номер типа номенклатуры из списка: ")) - 1
-selected_armature_type = list(unique_armatures)[armature_type_choice]
 
-# Отфильтровываем номенклатуры по выбранному типу
+selected_armature_type = list(unique_armature_types)[armature_type_choice]
+
 filtered_armatures = [armature for armature in all_armatures if armature.startswith(selected_armature_type)]
 
-# Отображаем список отфильтрованных номенклатур пользователю
 print("Список доступных номенклатур выбранного типа:")
 for i, armature in enumerate(filtered_armatures, start=1):
     print(f"{i}. {armature}")
 
-# Просим пользователя выбрать номенклатуру из списка
 armature_choice = int(input("Выберите номер номенклатуры из списка: ")) - 1
 selected_armature = filtered_armatures[armature_choice]
 
 print("Выбранная номенклатура:", selected_armature)
 
-# Запрос у пользователя даты закупки в формате "дд.мм.гггг"
-purchase_date = input("Введите дату закупки в формате дд.мм.гггг: ")
-purchase_date = datetime.strptime(purchase_date, "%d.%m.%Y")
-
-# Запрос у пользователя объема закупки в тоннах
-purchase_volume_str = input("Введите объем закупки в тоннах: ")
-purchase_volume = parse_quantity(purchase_volume_str)
-
-print("Дата закупки:", purchase_date)
-print("Объем закупки:", purchase_volume, "т")
-
-# Фильтрация данных по выбранной номенклатуре
 filtered_data = data[data['Номенклатура'] == selected_armature].copy()
 
-# Преобразование даты закупки в формат datetime
-filtered_data['Дата поступления'] = pd.to_datetime(filtered_data['Дата поступления'], dayfirst=True)
+filtered_data['Дата поступления'] = pd.to_datetime(filtered_data['Дата поступления']).dt.date
 
-# Агрегирование данных по дате и суммирование объема закупки
-aggregated_data = filtered_data.groupby('Дата поступления')['Количество'].sum()
+filtered_data.sort_values(by='Дата поступления', inplace=True)
 
-# Создаем временной ряд
-time_series = pd.Series(aggregated_data.values, index=pd.to_datetime(aggregated_data.index))
+filtered_data = filtered_data[~filtered_data.index.duplicated(keep='first')]
+
+time_series = filtered_data.set_index('Дата поступления')['Цена']
+
+time_series = time_series[~time_series.index.duplicated(keep='first')]
+
+time_series.index = pd.to_datetime(time_series.index)
 time_series = time_series.asfreq('D')
 
+if len(time_series) < 36:
+    print("Недостаточно данных для построения модели SARIMA.")
+    print("Пожалуйста, выберите другую номенклатуру или проверьте доступные данные.")
+    sys.exit()
 
-# Создаем графики ACF и PACF
-fig, axes = plt.subplots(2, 1, figsize=(12, 8))
-plot_acf(time_series, ax=axes[0], title='Автокорреляционная функция (ACF)', lags=20)
-plot_pacf(time_series, ax=axes[1], title='Частичная автокорреляционная функция (PACF)', lags=10)  # Изменено на 10 лагов
+time_series = time_series.interpolate(method='linear')
 
-# Добавляем подписи на русском языке
-axes[0].set_xlabel('Лаги')
-axes[0].set_ylabel('Корреляция')
-axes[1].set_xlabel('Лаги')
-axes[1].set_ylabel('Корреляция')
+forecast_start_date = time_series.index[-1]
 
+forecast_end_date = pd.to_datetime(input("Введите дату для прогноза в формате ДД.ММ.ГГГГ: "), format='%d.%m.%Y') + pd.Timedelta(days=30)
 
-# Обучаем модель ARIMA с оптимальными параметрами
-from statsmodels.tsa.arima.model import ARIMA
+model = SARIMAX(time_series, order=(1, 0, 1), seasonal_order=(1, 0, 1, 12))
+model_fit = model.fit()
 
-# Создаем модель ARIMA
-model = ARIMA(time_series, order=(1, 0, 0))
+forecast = model_fit.predict(start=forecast_start_date, end=forecast_end_date)
 
-# Обучаем модель на данных
-arima_model = model.fit()
-
-# Получаем прогноз на следующие несколько шагов
-forecast_steps = 10  # Настройте количество шагов прогноза по вашему усмотрению
-forecast = arima_model.forecast(steps=forecast_steps)
-
-# Выводим информацию о модели
-print(arima_model.summary())
-
-# Визуализируем временной ряд и прогноз
-plt.figure(figsize=(12, 6))
-plt.plot(time_series.index, time_series.values, marker='o', linestyle='-', label='Исходные данные')
-plt.plot(forecast.index, forecast.values, marker='o', linestyle='--', color='red', label='Прогноз')
-plt.title('Прогноз временного ряда')
-plt.xlabel('Дата')
-plt.ylabel('Объем поступления')
-plt.legend()
-plt.grid(True)
-plt.show()
-
-# Выводим прогноз на следующие шаги
-print("Прогноз на следующие шаги:")
+print("Прогноз цен на выбранную дату и на 30 дней вперед:")
 print(forecast)
 
-
+plt.plot(time_series.index, time_series, label='Исходные данные')
+plt.plot(forecast.index, forecast, color='red', label='Прогноз')
+plt.axvline(x=forecast_start_date, color='green', linestyle='--', label='Дата начала прогноза')
+plt.axvline(x=forecast_end_date, color='orange', linestyle='--', label='Дата конца прогноза')
+plt.xlabel('Дата')
+plt.ylabel('Цена')
+plt.title('Прогноз SARIMA для выбранной номенклатуры')
+plt.legend()
+plt.show()
